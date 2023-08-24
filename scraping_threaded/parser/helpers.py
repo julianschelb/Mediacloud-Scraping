@@ -1,6 +1,6 @@
-from scraping_support_scripts import hard_coded_errors as e
-import re
+import parser.exceptions as e
 import json
+import re
 from lxml import etree
 
 

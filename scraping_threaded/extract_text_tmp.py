@@ -3,6 +3,7 @@
 # ===========================================================================
 # Use this script fo scrape the content of the articles
 
+from bs4 import BeautifulSoup as bs
 from utils.database import *
 from time import perf_counter
 from threading import Thread
@@ -10,7 +11,7 @@ import logging
 import click
 import sys
 
-from parser.default import DefaultParser
+import scraping_support_functions as ss
 
 # ---------------------------------------------------------------------------
 #                            HELPERS
@@ -23,11 +24,34 @@ def chunks(l, n):
         yield l[i::n]
 
 
-def toLarge(variable, limit=15.5):
-    """Check if variable is to large"""
-    size_in_bytes = sys.getsizeof(variable)
-    size_in_MB = size_in_bytes / (1024 * 1024)  # Convert bytes to megabytes
-    return size_in_MB > limit
+def extractText(url, response):
+    """Parse the article content from the response object"""
+
+    soup = bs(response, "html.parser")
+    error = ""
+
+    # Check to see if the soup contains explicit errors
+    valid_soup = ss.check_soup_validity(soup.text.lower())
+    if valid_soup is not True:
+        error = valid_soup  # return the error if it is found
+
+    # Check if an alternative form of article text extraction is necessary
+    alt_scraping = ss.do_alternative_scraping(url, response, soup)
+    if alt_scraping is not None:
+        error = alt_scraping  # Return the extracted text if alt scraping was necessary
+
+    # Get contents of the page in the standard way
+    paragraphs = soup.find_all('p')
+    stripped_paragraph = [tag.get_text().strip()
+                          for tag in paragraphs]
+
+    # If the standard way to scrape returned empty, try a different handling
+    if len(stripped_paragraph) == 0 or stripped_paragraph == [""]:
+        error = ss.handle_empty_ptags(url, soup, response)
+
+    text = " ".join(stripped_paragraph)
+
+    return text, error
 
 # ---------------------------------------------------------------------------
 #                            MULTIPROCESSING
@@ -37,10 +61,10 @@ def toLarge(variable, limit=15.5):
 def processTasks(id, tasks, logger, db, fs):
     logger.info(f"Worker {id} started ...")
 
-    # Initiate parser
-    parser = DefaultParser()
+    # Initiate scraper
+    # scraper = DefaultScraper(str(id), logger, timeout=timeout)
 
-    for task_id, task in enumerate(tasks):
+    for task in tasks:
 
         try:
 
@@ -48,37 +72,28 @@ def processTasks(id, tasks, logger, db, fs):
             file_id = task.get("scraping_result", {}).get("content_html", None)
 
             if not file_id:
-                logger.info(
-                    f"Worker {id:2}: [{task_id}/{len(tasks)}] No html content found for {url}")
+                logger.info(f"Worker {id:2}: No html content found for {url}")
             else:
                 response = getPageContent(fs, file_id, encoding="UTF-8")
 
                 # Parse the article content from the response object
-                text, error = parser.extractText(url, response)
+                text, error = extractText(url, response)
 
                 # Write webpage content to file system
-                # meta = {"target_url": task["url"], "article_id": task["_id"]}
-                # file_id = savePageContent(
-                #    fs, text, encoding="UTF-8", attr=meta)
+                meta = {"target_url": task["url"], "article_id": task["_id"]}
+                file_id = savePageContent(
+                    fs, text, encoding="UTF-8", attr=meta)
 
-                if not toLarge(text):
-                    # Updated tasks by changig status and info about sraping results
-                    values = {'text_extracted': True,
-                              "parsing_result": {
-                                  "text": text,
-                                  "text_length": len(text),
-                                  "word_count": len(text.split(" ")),
-                                  'parsing_error': error}
-                              }
+                # Updated tasks by changig status and info about sraping results
+                values = {'text_extracted': True,
+                          "abstract": text[:250],
+                          "scraping_result.content_text": str(file_id),
+                          'parsing_error': error}
+                # result = {"content_txt": str(file_id)}
+                updateTask(db, task["_id"], values, None)
 
-                    # result = {"content_txt": str(file_id)}
-                    updateTask(db, task["_id"], values, None)
-
-                    logger.error(
-                        f"Worker {id:2}: [{task_id}/{len(tasks)}] Characters extracted: {len(text):4} - {text.strip()[:50]:50}")
-                else:
-                    logger.info(
-                        f"Worker {id:2}: [{task_id}/{len(tasks)}] Text to large for {url}")
+                logger.info(
+                    f"Worker {id:2}: Characters extracted: {len(text):4} - {text.strip()[:50]:50}")
 
         except Exception as e:
             logger.error(f"Worker {id:2}:  {repr(e)}")
@@ -93,8 +108,8 @@ def processTasks(id, tasks, logger, db, fs):
 # fmt: off
 @click.command()
 @click.option("--path_logfile", default="logs_extraction.log", help="Logfile location") 
-@click.option("--workers", default=2, help="Number of threads used for scraping")
-@click.option("--limit", default=512, help="Only scraping first n urls (0 equals no limit)")
+@click.option("--workers", default=4, help="Number of threads used for scraping")
+@click.option("--limit", default=500, help="Only scraping first n urls (0 equals no limit)")
 @click.option('--status', default="CONTENT-FETCHED", help="Any status")
 @click.option("--batch", default="last", help="all, first last, or a number indicating the batch")
 def main(path_logfile, workers, 
