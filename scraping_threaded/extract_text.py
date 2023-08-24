@@ -108,8 +108,8 @@ def processTasks(id, tasks, logger, db, fs):
 # fmt: off
 @click.command()
 @click.option("--path_logfile", default="logs_extraction.log", help="Logfile location") 
-@click.option("--workers", default=4, help="Number of threads used for scraping")
-@click.option("--limit", default=500, help="Only scraping first n urls (0 equals no limit)")
+@click.option("--workers", default=64, help="Number of threads used for scraping")
+@click.option("--limit", default=512, help="Only scraping first n urls (0 equals no limit)")
 @click.option('--status', default="CONTENT-FETCHED", help="Any status")
 @click.option("--batch", default="last", help="all, first last, or a number indicating the batch")
 def main(path_logfile, workers, 

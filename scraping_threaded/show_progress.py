@@ -37,6 +37,21 @@ def calcDiff(previous_counts, new_counts):
 
     return result
 
+
+def calcRate(results, timer):
+    elapsed = (time.time() - timer) if timer else None
+    timer = time.time()
+    for status in results:
+        if elapsed:
+            rate = round(status.get("diff", 0) / elapsed)
+            color = "green" if rate >= 0 else "red"
+            status["rate"] = click.style(str(rate), fg=color)
+        else:
+            status["previous_count"] = click.style(str("-"), fg="bright_black")
+            status["rate"] = click.style(str("-"), fg="bright_black")
+            status["diff"] = click.style(str("-"), fg="bright_black")
+    return timer, results
+
 # ================================= MAIN ================================
 
 # fmt: off
@@ -50,12 +65,14 @@ def main(refresh_rate):
 
     click.echo(click.style("Loading results ...", fg="blue", bold=True))
     results = {}
+    timer = None
 
     while True:
 
         # Fetch data and calculate diff
         new_results = countProcessingStatus(db)
         results_diff = calcDiff(results, new_results)
+        timer, results_diff = calcRate(results_diff, timer)
         results = new_results
         click.clear()
 
@@ -64,7 +81,7 @@ def main(refresh_rate):
 
         # Content: current status and document counts
         header_names = {"_id": "Status", "previous_count": "Prev. Count",
-                        "new_count": "Count", "diff": "Diff"}
+                        "new_count": "Count", "diff": "Diff", "rate": "Rate"}
         print(tabulate(results_diff, headers=header_names))
 
         # Footer
