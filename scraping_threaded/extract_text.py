@@ -47,7 +47,7 @@ def processTasks(id, tasks, logger, db, fs):
             url = task["url"]
             file_id = task.get("scraping_result", {}).get("content_html", None)
 
-            if not file_id:
+            if not file_id or file_id == "None":
                 logger.info(
                     f"Worker {id:2}: [{task_id}/{len(tasks)}] No html content found for {url}")
             else:
@@ -63,21 +63,22 @@ def processTasks(id, tasks, logger, db, fs):
 
                 if not toLarge(text):
                     # Updated tasks by changig status and info about sraping results
-                    values = {'text_extracted': True,
+                    values = {"text_extracted": True,
+                              "status": "CONTENT-EXTRACTED",
                               "parsing_result": {
                                   "text": text,
                                   "text_length": len(text),
                                   "word_count": len(text.split(" ")),
-                                  'parsing_error': error}
+                                  "parsing_error": error}
                               }
 
                     # result = {"content_txt": str(file_id)}
                     updateTask(db, task["_id"], values, None)
 
-                    logger.error(
+                    logger.info(
                         f"Worker {id:2}: [{task_id}/{len(tasks)}] Characters extracted: {len(text):4} - {text.strip()[:50]:50}")
                 else:
-                    logger.info(
+                    logger.error(
                         f"Worker {id:2}: [{task_id}/{len(tasks)}] Text to large for {url}")
 
         except Exception as e:
@@ -93,8 +94,8 @@ def processTasks(id, tasks, logger, db, fs):
 # fmt: off
 @click.command()
 @click.option("--path_logfile", default="logs_extraction.log", help="Logfile location") 
-@click.option("--workers", default=2, help="Number of threads used for scraping")
-@click.option("--limit", default=512, help="Only scraping first n urls (0 equals no limit)")
+@click.option("--workers", default=8, help="Number of threads used for scraping")
+@click.option("--limit", default=512_00, help="Only scraping first n urls (0 equals no limit)")
 @click.option('--status', default="CONTENT-FETCHED", help="Any status")
 @click.option("--batch", default="last", help="all, first last, or a number indicating the batch")
 def main(path_logfile, workers, 

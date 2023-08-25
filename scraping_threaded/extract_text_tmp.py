@@ -1,17 +1,11 @@
-# ===========================================================================
-#                            Extract Article Content
-# ===========================================================================
-# Use this script fo scrape the content of the articles
-
-from bs4 import BeautifulSoup as bs
 from utils.database import *
 from time import perf_counter
-from threading import Thread
 import logging
 import click
 import sys
+import multiprocessing
 
-import scraping_support_functions as ss
+from parser.default import DefaultParser
 
 # ---------------------------------------------------------------------------
 #                            HELPERS
@@ -24,98 +18,85 @@ def chunks(l, n):
         yield l[i::n]
 
 
-def extractText(url, response):
-    """Parse the article content from the response object"""
+def toLarge(variable, limit=15.5):
+    """Check if variable is to large"""
+    size_in_bytes = sys.getsizeof(variable)
+    size_in_MB = size_in_bytes / (1024 * 1024)  # Convert bytes to megabytes
+    return size_in_MB > limit
 
-    soup = bs(response, "html.parser")
-    error = ""
-
-    # Check to see if the soup contains explicit errors
-    valid_soup = ss.check_soup_validity(soup.text.lower())
-    if valid_soup is not True:
-        error = valid_soup  # return the error if it is found
-
-    # Check if an alternative form of article text extraction is necessary
-    alt_scraping = ss.do_alternative_scraping(url, response, soup)
-    if alt_scraping is not None:
-        error = alt_scraping  # Return the extracted text if alt scraping was necessary
-
-    # Get contents of the page in the standard way
-    paragraphs = soup.find_all('p')
-    stripped_paragraph = [tag.get_text().strip()
-                          for tag in paragraphs]
-
-    # If the standard way to scrape returned empty, try a different handling
-    if len(stripped_paragraph) == 0 or stripped_paragraph == [""]:
-        error = ss.handle_empty_ptags(url, soup, response)
-
-    text = " ".join(stripped_paragraph)
-
-    return text, error
 
 # ---------------------------------------------------------------------------
 #                            MULTIPROCESSING
 # ---------------------------------------------------------------------------
 
+def process_task_chunk(tasks, logger):
+    process_id = multiprocessing.current_process().name
+    logger.info(f"Worker {process_id} started ...")
 
-def processTasks(id, tasks, logger, db, fs):
-    logger.info(f"Worker {id} started ...")
+    # Initiate parser
+    parser = DefaultParser()
+    fs, db = getConnection(use_dotenv=True)
 
-    # Initiate scraper
-    # scraper = DefaultScraper(str(id), logger, timeout=timeout)
-
-    for task in tasks:
-
+    for task_id, task in enumerate(tasks):
         try:
-
             url = task["url"]
             file_id = task.get("scraping_result", {}).get("content_html", None)
 
             if not file_id:
-                logger.info(f"Worker {id:2}: No html content found for {url}")
+                logger.info(
+                    f"Worker {process_id:2}: [{task_id}/{len(tasks)}] No html content found for {url}")
             else:
                 response = getPageContent(fs, file_id, encoding="UTF-8")
 
                 # Parse the article content from the response object
-                text, error = extractText(url, response)
+                text, error = parser.extractText(url, response)
 
                 # Write webpage content to file system
-                meta = {"target_url": task["url"], "article_id": task["_id"]}
-                file_id = savePageContent(
-                    fs, text, encoding="UTF-8", attr=meta)
+                # meta = {"target_url": task["url"], "article_id": task["_id"]}
+                # file_id = savePageContent(
+                #    fs, text, encoding="UTF-8", attr=meta)
 
-                # Updated tasks by changig status and info about sraping results
-                values = {'text_extracted': True,
-                          "abstract": text[:250],
-                          "scraping_result.content_text": str(file_id),
-                          'parsing_error': error}
-                # result = {"content_txt": str(file_id)}
-                updateTask(db, task["_id"], values, None)
+                if not toLarge(text):
+                    # Updated tasks by changig status and info about sraping results
+                    values = {'text_extracted': True,
+                              "status": "CONTENT-EXTRACTED",
+                              "parsing_result": {
+                                  "text": text,
+                                  "text_length": len(text),
+                                  "word_count": len(text.split(" ")),
+                                  'parsing_error': error}
+                              }
 
-                logger.info(
-                    f"Worker {id:2}: Characters extracted: {len(text):4} - {text.strip()[:50]:50}")
+                    # result = {"content_txt": str(file_id)}
+                    updateTask(db, task["_id"], values, None)
+
+                    logger.info(
+                        f"Worker {process_id:2}: [{task_id}/{len(tasks)}] Characters extracted: {len(text):4} - {text.strip()[:50]:50}")
+                else:
+                    pass
+                    logger.error(
+                        f"Worker {process_id:2}: [{task_id}/{len(tasks)}] Text to large for {url}")
 
         except Exception as e:
-            logger.error(f"Worker {id:2}:  {repr(e)}")
+            logger.error(f"Worker {process_id}: {repr(e)}")
 
-    logger.info(f"Worker {id:2}: finished")
-
+    # logger.info(f"Worker {process_id} finished")
 
 # ---------------------------------------------------------------------------
 #                            MAIN
 # ---------------------------------------------------------------------------
 
-# fmt: off
+
 @click.command()
-@click.option("--path_logfile", default="logs_extraction.log", help="Logfile location") 
-@click.option("--workers", default=4, help="Number of threads used for scraping")
-@click.option("--limit", default=500, help="Only scraping first n urls (0 equals no limit)")
+@click.option("--path_logfile", default="logs_extraction.log", help="Logfile location")
+@click.option("--workers", default=4, help="Number of processes used for scraping")
+@click.option("--limit", default=100_000, help="Only scraping first n urls (0 equals no limit)")
 @click.option('--status', default="CONTENT-FETCHED", help="Any status")
 @click.option("--batch", default="last", help="all, first last, or a number indicating the batch")
-def main(path_logfile, workers, 
-       limit, status,  batch): 
+def main(path_logfile, workers,
+         limit, status,  batch):
 
-    # ------------------- LOGGING -------------------
+ # ------------------- LOGGING -------------------
 
     # Create logger
     logger = logging.getLogger("main")
@@ -155,28 +136,21 @@ def main(path_logfile, workers,
 
     logger.info(f"Number of URLs to be scraped: {len(tasks)}")
 
-    # if there is more than worker use threads
-    if workers > 1:
+    logger.info(f"Using multiprocessing with {workers} processes")
 
-        threads = []
+    # Create a pool of worker processes
+    pool = multiprocessing.Pool(processes=workers)
 
-        # Create one thread per chunk
-        for id, chunk in enumerate(chunks(tasks, workers)):
+    # Split tasks into chunks for each process
+    chunked_tasks = list(chunks(tasks, workers))
 
-            # Package arguments
-            args = (id, chunk, logger, db, fs)  # fmt: skip
+    # Map the process_task_chunk function to the chunks using the pool
+    pool.starmap(process_task_chunk, [
+                 (chunk, logger) for chunk in chunked_tasks])
 
-            # Create and start thread
-            t = Thread(target=processTasks, args=args)
-            threads.append(t)
-            t.start()
-
-        # Wait for the threads to complete
-        for t in threads:
-            t.join()
-
-    else:
-        processTasks(-1, tasks, logger, db, fs)
+    # Close the pool of processes
+    pool.close()
+    pool.join()
 
     # ------------------- WRAP UP -------------------
 
