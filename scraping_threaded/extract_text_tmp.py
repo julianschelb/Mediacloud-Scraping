@@ -1,3 +1,8 @@
+# ===========================================================================
+#                            Extract Article Content
+# ===========================================================================
+# Use this script fo scrape the content of the articles
+
 from utils.database import *
 from time import perf_counter
 import logging
@@ -89,8 +94,8 @@ def process_task_chunk(tasks, logger):
 
 @click.command()
 @click.option("--path_logfile", default="logs_extraction.log", help="Logfile location")
-@click.option("--workers", default=4, help="Number of processes used for scraping")
-@click.option("--limit", default=100_000, help="Only scraping first n urls (0 equals no limit)")
+@click.option("--workers", default=16, help="Number of processes used for scraping")
+@click.option("--limit", default=2_000_000, help="Only scraping first n urls (0 equals no limit)")
 @click.option('--status', default="CONTENT-FETCHED", help="Any status")
 @click.option("--batch", default="last", help="all, first last, or a number indicating the batch")
 def main(path_logfile, workers,
@@ -115,7 +120,7 @@ def main(path_logfile, workers,
     file_handler.setFormatter(formatter)
     logger.addHandler(file_handler)
 
-    logger.info("Extraction Scraping Run")
+    logger.info("Starting Extraction Run")
 
     # fmt: on
     timer_start = perf_counter()
